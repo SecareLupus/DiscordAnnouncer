@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "discord-webhook-notifier"
+version = "0.1.0"
+description = "CLI and Tk GUI to send templated Discord webhook notifications"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Foxy Lupi" }
+]
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+  "python-dotenv>=1.0",
+  "jinja2>=3.1",
+  "requests>=2.31",
+  "pydantic>=2.6"
+]
+
+[project.urls]
+Homepage = "https://example.com/discord-webhook-notifier"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-httpserver>=1.0.8",
+  "coverage>=7.4"
+]
+
+[project.scripts]
+discord-webhook-notifier = "src.main:run"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]

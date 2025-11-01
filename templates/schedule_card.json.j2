@@ -1,0 +1,23 @@
+{
+  "username": "{{ BOT_USERNAME | default('Schedule Bot') }}",
+  "avatar_url": "{{ BOT_AVATAR_URL | default('') }}",
+  "content": "{{ message_prefix | default('') }}{{ message | default('Here\'s the schedule!') }}",
+  "embeds": [
+    {
+      "title": "{{ title | default('Stream Schedule') }}",
+      "description": "{{ description | default('Upcoming shows and events.') }}",
+      "image": {"url": "{{ image_url | default('') }}"},
+      "color": {{ (color | default(DEFAULT_COLOR)) | int(base=0) }},
+      "fields": [
+        {% for slot in slots | default([]) %}
+        {
+          "name": "{{ slot.name }}",
+          "value": "{{ slot.value }}",
+          "inline": {{ 'true' if slot.inline | default(false) else 'false' }}
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ]
+    }
+  ],
+  "allowed_mentions": {"parse": []}
+}

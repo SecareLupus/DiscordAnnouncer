@@ -1,0 +1,18 @@
+{
+  "username": "{{ BOT_USERNAME | default('Live Alert Bot') }}",
+  "avatar_url": "{{ BOT_AVATAR_URL | default('') }}",
+  "content": "{{ message_prefix | default('') }}{{ message | default('We are live!') }}",
+  "embeds": [
+    {
+      "title": "{{ title | default('We\'re LIVE!') }}",
+      "url": "{{ stream_url | default('https://twitch.tv/YourChannel') }}",
+      "description": "{{ description | default('Come hang out!') }}",
+      "color": {{ (color | default(DEFAULT_COLOR)) | int(base=0) }},
+      "thumbnail": {"url": "{{ thumbnail_url | default('') }}"},
+      "image": {"url": "{{ banner_url | default('') }}"},
+      "footer": {"text": "{{ footer_text | default('Join us in chat!') }}"},
+      "timestamp": "{{ now_iso }}"
+    }
+  ],
+  "allowed_mentions": {"parse": []}
+}
