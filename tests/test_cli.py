@@ -8,7 +8,9 @@ def test_cli_dry_run(tmp_path, capsys):
     template.write_text('{"content": "{{ message }}"}')
 
     env_file = tmp_path / "vars.env"
-    env_file.write_text("DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/123/abc\n")
+    env_file.write_text(
+        "DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/123/abc\n"
+    )
 
     exit_code = run_cli(
         [
@@ -25,4 +27,31 @@ def test_cli_dry_run(tmp_path, capsys):
     stdout, stderr = capsys.readouterr()
     assert exit_code == 0
     assert "Hello" in stdout
+    assert stderr == ""
+
+
+def test_cli_json_var_support(tmp_path, capsys):
+    template = tmp_path / "payload.json.j2"
+    template.write_text('{"count": {{ slots | length }}}')
+
+    env_file = tmp_path / "vars.env"
+    env_file.write_text(
+        "DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/123/abc\n"
+    )
+
+    exit_code = run_cli(
+        [
+            "--template",
+            str(template),
+            "--env",
+            str(env_file),
+            "--json-var",
+            'slots=[{"name": "One"}, {"name": "Two"}]',
+            "--dry-run",
+        ]
+    )
+
+    stdout, stderr = capsys.readouterr()
+    assert exit_code == 0
+    assert '"count": 2' in stdout
     assert stderr == ""

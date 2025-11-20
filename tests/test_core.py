@@ -8,6 +8,7 @@ from src.notifier.core import (
     DeliveryResult,
     PayloadValidationError,
     deliver_payload,
+    filter_attachments_for_payload,
     finalize_payload,
     validate_payload,
 )

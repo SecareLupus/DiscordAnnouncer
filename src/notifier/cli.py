@@ -104,6 +104,13 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         help="Template variable assignment (key=value).",
     )
     parser.add_argument(
+        "--json-var",
+        action="append",
+        default=[],
+        dest="json_vars",
+        help="Template variable assignment parsed as JSON (key=<json>).",
+    )
+    parser.add_argument(
         "--file",
         action="append",
         default=[],
@@ -219,9 +226,19 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         cli_vars = parse_var_assignments(args.var)
+        cli_json_vars = parse_var_assignments(args.json_vars, deserialize_json=True)
     except TemplateRenderError as exc:
         LOG.error(str(exc))
         return EXIT_TEMPLATE_ERROR
+
+    if cli_json_vars:
+        overlap = sorted(set(cli_vars) & set(cli_json_vars))
+        if overlap:
+            LOG.debug(
+                "JSON template variables override string assignments for: %s",
+                ", ".join(overlap),
+            )
+        cli_vars.update(cli_json_vars)
 
     env_overrides = {}
     if args.webhook:

@@ -60,8 +60,10 @@ def embed_timestamp(value: Optional[object] = None) -> str:
     return target.astimezone(timezone.utc).isoformat()
 
 
-def parse_var_assignments(items: Iterable[str]) -> Dict[str, str]:
-    assignments: Dict[str, str] = {}
+def parse_var_assignments(
+    items: Iterable[str], *, deserialize_json: bool = False
+) -> Dict[str, object]:
+    assignments: Dict[str, object] = {}
     for item in items:
         if "=" not in item:
             raise TemplateRenderError(
@@ -71,7 +73,15 @@ def parse_var_assignments(items: Iterable[str]) -> Dict[str, str]:
         key = key.strip()
         if not key:
             raise TemplateRenderError("Variable names must not be empty")
-        assignments[key] = value
+        if deserialize_json:
+            try:
+                assignments[key] = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise TemplateRenderError(
+                    f"Invalid JSON for variable '{key}': {exc.msg} (line {exc.lineno} column {exc.colno})"
+                ) from exc
+        else:
+            assignments[key] = value
     return assignments
 
 
@@ -93,7 +103,7 @@ def build_template_context(
     message: str,
     include_everyone: bool,
     env_values: Mapping[str, str],
-    overrides: Mapping[str, str],
+    overrides: Mapping[str, object],
     extra_context: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     context: Dict[str, object] = {}

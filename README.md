@@ -35,6 +35,7 @@ Helpful flags:
 
 - `--file PATH[::DESCRIPTION][::CONTENT_TYPE]` upload an embed asset (reference via `attachment://filename` in templates).
 - `--upload PATH[::DESCRIPTION][::CONTENT_TYPE]` attach a raw file to the message body.
+- `--json-var key=<json>` provide structured values (lists/objects) directly to templates.
 - `--everyone` prepend `@everyone, ` to the message body.
 - `--allow-mentions everyone,roles` opt into additional mention types; defaults disallow mass pings.
 - `--dry-run` render JSON to stdout without contacting Discord.
@@ -61,6 +62,8 @@ To mirror Discord's embed structure without repeating JSON fragments, helpers ar
 
 Pair these helpers with the built-in `|tojson` filter to inline them directly into JSON payloads.
 
+Structured inputs created via the GUI (for example, repeating embed fields) are sent through `--json-var` so you can populate the same data from the CLI by providing JSON literals.
+
 ## Attachments
 
 Use `--file path/to/banner.png::Alt text::image/png` for embed assets; only referenced filenames are uploaded so stray files cannot leak into the message body. Pair this with `attachment://banner.png` anywhere an image URL is expected. When you need to include a standard file download alongside the embed, use `--upload path/to/report.pdf` instead. Both switches respect the same optional description and MIME override syntax, and Discord’s 10-attachment limit still applies to the combined total.
@@ -74,6 +77,8 @@ python3 -m src.notifier.gui_tk
 ```
 
 The window lets you pick a webhook, template, message, variables (one `key=value` per line), and attachments. “Preview” runs the CLI with `--dry-run` and shows the captured output; “Send” executes the real request. Recent inputs persist in `~/.discord-webhook-notifier/state.json`.
+
+Template metadata can opt into richer field types (such as repeating embed fields). Those controls serialize to JSON automatically and are passed to the CLI via `--json-var`, so the GUI, CLI, and automation all share the same structured data path.
 
 ## Development
 

@@ -178,6 +178,8 @@ class NotifierGUI(tk.Tk):
         self.state = GuiState.load()
         self.template_choices = self._discover_template_choices()
         self.var_entries: Dict[str, tk.StringVar] = {}
+        self.var_definitions: Dict[str, Dict[str, object]] = {}
+        self._list_summary_vars: Dict[str, tk.StringVar] = {}
         self._template_refresh_job: Optional[str] = None
         self._env_defaults = self._load_env_defaults()
         self.template_metadata = self._load_template_metadata()
@@ -494,7 +496,9 @@ class NotifierGUI(tk.Tk):
         module = "src.main"
         return [sys.executable, "-m", module]
 
-    def _gather_cli_args(self, variables: Dict[str, str]) -> List[str]:
+    def _gather_cli_args(
+        self, variables: Dict[str, str], json_variables: Dict[str, str]
+    ) -> List[str]:
         args = []
         template = self.template_path_var.get().strip()
         if template:
@@ -509,6 +513,8 @@ class NotifierGUI(tk.Tk):
             args.append("--everyone")
         for key, value in variables.items():
             args.extend(["--var", f"{key}={value}"])
+        for key, value in json_variables.items():
+            args.extend(["--json-var", f"{key}={value}"])
         for item in self.attachment_list.get(0, tk.END):
             args.extend(["--file", item])
         return args
@@ -520,13 +526,13 @@ class NotifierGUI(tk.Tk):
         self._execute_cli(dry_run=False)
 
     def _execute_cli(self, *, dry_run: bool) -> None:
-        template_variables = self._collect_variable_entries()
+        template_variables, template_json_variables = self._collect_variable_entries()
         config_overrides = self._collect_config_overrides()
         combined_variables = {**config_overrides, **template_variables}
 
-        self._persist_state(template_variables)
+        self._persist_state({**template_variables, **template_json_variables})
         base_cmd = self._build_cli_base()
-        args = self._gather_cli_args(combined_variables)
+        args = self._gather_cli_args(combined_variables, template_json_variables)
         if dry_run:
             args.append("--dry-run")
         cmd = base_cmd + args
@@ -590,6 +596,8 @@ class NotifierGUI(tk.Tk):
         for child in self.vars_frame.winfo_children():
             child.destroy()
         self.var_entries = {}
+        self.var_definitions = {}
+        self._list_summary_vars = {}
 
         if not variable_defs:
             msg = "Select a template to load its variables."
@@ -598,13 +606,38 @@ class NotifierGUI(tk.Tk):
 
         for row, definition in enumerate(variable_defs):
             name = str(definition.get("name", ""))
+            if not name:
+                continue
+            self.var_definitions[name] = definition
             label_text = str(
                 definition.get("label") or self._humanize_variable_name(name)
             )
             field_type = str(definition.get("type") or "")
             label = ttk.Label(self.vars_frame, text=f"{label_text}:")
             label.grid(row=row, column=0, sticky="w", pady=1, padx=(0, 6))
-            var = tk.StringVar(value=preserved_values.get(name, ""))
+            initial_value = self._resolve_initial_value(
+                name, definition, preserved_values
+            )
+            var = tk.StringVar(value=initial_value)
+            self.var_entries[name] = var
+
+            if field_type == "list":
+                summary = tk.StringVar()
+                self._list_summary_vars[name] = summary
+                self._update_list_summary(name)
+                ttk.Label(self.vars_frame, textvariable=summary).grid(
+                    row=row, column=1, sticky="w", pady=1
+                )
+                ttk.Button(
+                    self.vars_frame,
+                    text="Edit…",
+                    command=lambda target=name: self._open_list_editor(target),
+                ).grid(row=row, column=2, sticky="w", padx=(6, 0))
+                var.trace_add(
+                    "write", lambda *_args, key=name: self._update_list_summary(key)
+                )
+                continue
+
             if self._is_image_field(name, field_type):
                 entry = ttk.Combobox(
                     self.vars_frame,
@@ -614,7 +647,6 @@ class NotifierGUI(tk.Tk):
             else:
                 entry = ttk.Entry(self.vars_frame, textvariable=var)
             entry.grid(row=row, column=1, sticky="ew", pady=1)
-            self.var_entries[name] = var
             column = 2
             if self._is_color_field(name, field_type):
                 ttk.Button(
@@ -632,13 +664,16 @@ class NotifierGUI(tk.Tk):
                     ),
                 ).grid(row=row, column=column, padx=(4, 0))
 
-    def _collect_variable_entries(self) -> Dict[str, str]:
-        variables: Dict[str, str] = {}
+    def _collect_variable_entries(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+        string_vars: Dict[str, str] = {}
+        json_vars: Dict[str, str] = {}
         for key, var in self.var_entries.items():
             value = var.get().strip()
-            if value:
-                variables[key] = value
-        return variables
+            if not value:
+                continue
+            target = json_vars if self._is_json_field(key) else string_vars
+            target[key] = value
+        return string_vars, json_vars
 
     def _collect_config_overrides(self) -> Dict[str, str]:
         overrides: Dict[str, str] = {}
@@ -647,6 +682,331 @@ class NotifierGUI(tk.Tk):
             if value:
                 overrides[key] = value
         return overrides
+
+    def _resolve_initial_value(
+        self,
+        name: str,
+        definition: Mapping[str, object],
+        preserved_values: Mapping[str, str],
+    ) -> str:
+        if name in preserved_values:
+            return preserved_values[name]
+        default = definition.get("default")
+        is_json_field = bool(definition.get("is_json"))
+        if default is not None:
+            if is_json_field:
+                return json.dumps(default, ensure_ascii=False)
+            return str(default)
+        if is_json_field:
+            field_type = str(definition.get("type") or "")
+            if field_type == "list":
+                return "[]"
+            return ""
+        return ""
+
+    def _is_json_field(self, name: str) -> bool:
+        definition = self.var_definitions.get(name) or {}
+        return bool(definition.get("is_json"))
+
+    def _update_list_summary(self, name: str) -> None:
+        summary_var = self._list_summary_vars.get(name)
+        var = self.var_entries.get(name)
+        if summary_var is None or var is None:
+            return
+        raw = var.get().strip()
+        if not raw:
+            summary_var.set("No items")
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            summary_var.set("Invalid data")
+            return
+        if isinstance(data, list):
+            count = len(data)
+            label = (
+                self.var_definitions.get(name, {})
+                .get("config", {})
+                .get("item_label", "item")
+            )
+            if count == 0:
+                summary_var.set(f"No {label}s")
+            else:
+                plural = "" if count == 1 else "s"
+                summary_var.set(f"{count} {label}{plural}")
+        else:
+            summary_var.set("Invalid data")
+
+    def _open_list_editor(self, name: str) -> None:
+        definition = self.var_definitions.get(name)
+        var = self.var_entries.get(name)
+        if not definition or var is None:
+            return
+        config = definition.get("config") or {}
+        fields = config.get("fields") or []
+        if not fields:
+            messagebox.showwarning(
+                "Structured Input",
+                "This field does not define any item metadata.",
+                parent=self,
+            )
+            return
+        label_text = (
+            definition.get("label")
+            or self._humanize_variable_name(name)
+            or name.title()
+        )
+        item_label = config.get("item_label") or "Item"
+        items = self._load_structured_list(var.get())
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Edit {label_text}")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+
+        columns = [str(field.get("name") or idx) for idx, field in enumerate(fields)]
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", height=8)
+        for column_id, field in zip(columns, fields):
+            heading = field.get("label") or self._humanize_variable_name(column_id)
+            tree.heading(column_id, text=str(heading))
+            width = int(field.get("width", 160))
+            tree.column(column_id, width=width, anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        def refresh_tree() -> None:
+            tree.delete(*tree.get_children())
+            for idx, item in enumerate(items):
+                values = [
+                    self._format_structured_field_value(field, item.get(field_name))
+                    for field, field_name in zip(fields, columns)
+                ]
+                tree.insert("", "end", iid=str(idx), values=values)
+
+        def selected_index() -> Optional[int]:
+            selection = tree.selection()
+            if not selection:
+                return None
+            try:
+                return int(selection[0])
+            except ValueError:
+                return None
+
+        def add_item() -> None:
+            result = self._prompt_list_item(
+                dialog,
+                item_label=f"New {item_label}",
+                fields=fields,
+            )
+            if result is not None:
+                items.append(result)
+                refresh_tree()
+
+        def edit_item() -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            result = self._prompt_list_item(
+                dialog,
+                item_label=f"Edit {item_label}",
+                fields=fields,
+                initial=items[idx],
+            )
+            if result is not None:
+                items[idx] = result
+                refresh_tree()
+
+        def remove_item() -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            del items[idx]
+            refresh_tree()
+
+        def move_item(offset: int) -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            new_index = idx + offset
+            if new_index < 0 or new_index >= len(items):
+                return
+            items[idx], items[new_index] = items[new_index], items[idx]
+            refresh_tree()
+            tree.selection_set(str(new_index))
+
+        ttk.Button(button_frame, text="Add", command=add_item).grid(
+            row=0, column=0, padx=(0, 4)
+        )
+        ttk.Button(button_frame, text="Edit", command=edit_item).grid(
+            row=0, column=1, padx=4
+        )
+        ttk.Button(button_frame, text="Remove", command=remove_item).grid(
+            row=0, column=2, padx=4
+        )
+        ttk.Button(button_frame, text="Move Up", command=lambda: move_item(-1)).grid(
+            row=0, column=3, padx=4
+        )
+        ttk.Button(button_frame, text="Move Down", command=lambda: move_item(1)).grid(
+            row=0, column=4, padx=4
+        )
+
+        tree.bind("<Double-1>", lambda *_args: edit_item())
+
+        action_frame = ttk.Frame(dialog)
+        action_frame.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def close_without_save() -> None:
+            dialog.destroy()
+
+        def save_and_close() -> None:
+            var.set(json.dumps(items, ensure_ascii=False))
+            self._update_list_summary(name)
+            dialog.destroy()
+
+        ttk.Button(action_frame, text="Cancel", command=close_without_save).grid(
+            row=0, column=0, padx=(0, 6)
+        )
+        ttk.Button(action_frame, text="Done", command=save_and_close).grid(
+            row=0, column=1
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", close_without_save)
+        refresh_tree()
+        self.wait_window(dialog)
+
+    def _load_structured_list(self, raw: str) -> List[Dict[str, object]]:
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, list):
+            return []
+        cleaned: List[Dict[str, object]] = []
+        for item in data:
+            if isinstance(item, dict):
+                cleaned.append(dict(item))
+        return cleaned
+
+    def _prompt_list_item(
+        self,
+        parent: tk.Toplevel,
+        *,
+        item_label: str,
+        fields: Sequence[Mapping[str, object]],
+        initial: Optional[Mapping[str, object]] = None,
+    ) -> Optional[Dict[str, object]]:
+        dialog = tk.Toplevel(parent)
+        dialog.title(item_label)
+        dialog.transient(parent)
+        dialog.grab_set()
+        dialog.columnconfigure(1, weight=1)
+
+        entries: Dict[str, ttk.Entry] = {}
+        text_widgets: Dict[str, tk.Text] = {}
+        bool_vars: Dict[str, tk.BooleanVar] = {}
+
+        for row, field in enumerate(fields):
+            field_name = str(field.get("name") or row)
+            label_text = str(
+                field.get("label") or self._humanize_variable_name(field_name)
+            )
+            ttk.Label(dialog, text=f"{label_text}:").grid(
+                row=row, column=0, sticky="w", padx=(0, 8), pady=2
+            )
+            widget_type = str(field.get("widget") or "")
+            field_type = str(field.get("type") or "")
+            default_value = None
+            if initial and field_name in initial:
+                default_value = initial[field_name]
+            elif "default" in field:
+                default_value = field.get("default")
+            if field_type == "bool":
+                var = tk.BooleanVar(value=bool(default_value))
+                bool_vars[field_name] = var
+                ttk.Checkbutton(dialog, variable=var).grid(
+                    row=row, column=1, sticky="w"
+                )
+                continue
+            if widget_type == "textarea":
+                rows = int(field.get("rows", 4))
+                text = tk.Text(dialog, height=rows, width=40)
+                if default_value:
+                    text.insert("1.0", str(default_value))
+                text.grid(row=row, column=1, sticky="ew")
+                text_widgets[field_name] = text
+            else:
+                entry = ttk.Entry(dialog)
+                if default_value:
+                    entry.insert(0, str(default_value))
+                entry.grid(row=row, column=1, sticky="ew")
+                entries[field_name] = entry
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.grid(row=len(fields), column=0, columnspan=2, pady=(10, 0))
+
+        result: List[Dict[str, object]] = []
+
+        def close_without_save() -> None:
+            dialog.destroy()
+
+        def save_and_close() -> None:
+            data: Dict[str, object] = {}
+            for field in fields:
+                field_name = str(field.get("name") or "")
+                field_type = str(field.get("type") or "")
+                widget_type = str(field.get("widget") or "")
+                value: object
+                if field_type == "bool":
+                    value = bool_vars.get(field_name, tk.BooleanVar(value=False)).get()
+                elif widget_type == "textarea":
+                    widget = text_widgets.get(field_name)
+                    value = widget.get("1.0", tk.END).strip() if widget else ""
+                else:
+                    entry = entries.get(field_name)
+                    value = entry.get().strip() if entry else ""
+                if field.get("required") and (value is None or value == ""):
+                    messagebox.showwarning(
+                        "Missing value",
+                        f"{field.get('label', field_name)} is required.",
+                        parent=dialog,
+                    )
+                    return
+                data[field_name] = value
+            result.append(data)
+            dialog.destroy()
+
+        ttk.Button(button_frame, text="Cancel", command=close_without_save).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Button(button_frame, text="Save", command=save_and_close).grid(
+            row=0, column=1
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", close_without_save)
+        parent.wait_window(dialog)
+        return result[0] if result else None
+
+    @staticmethod
+    def _format_structured_field_value(
+        field: Mapping[str, object], value: object
+    ) -> str:
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if value is None:
+            return ""
+        text = str(value)
+        return text.replace("\n", " ").strip()
 
     def _attachment_suggestions(self) -> List[str]:
         suggestions: List[str] = []
@@ -773,13 +1133,19 @@ class NotifierGUI(tk.Tk):
             info = {}
             if isinstance(variable_metadata, dict):
                 info = variable_metadata.get(name, {}) or {}
-            definitions.append(
-                {
-                    "name": name,
-                    "label": info.get("label"),
-                    "type": info.get("type") or info.get("input"),
-                }
-            )
+            field_type = str(info.get("type") or info.get("input") or "")
+            definition: Dict[str, object] = {
+                "name": name,
+                "label": info.get("label"),
+                "type": field_type,
+                "config": info,
+                "is_json": bool(info.get("json")),
+            }
+            if "default" in info:
+                definition["default"] = info.get("default")
+            if field_type in {"list", "object"}:
+                definition["is_json"] = True
+            definitions.append(definition)
         return definitions
 
     def _get_template_metadata(self, template_path: str) -> Dict[str, object]:

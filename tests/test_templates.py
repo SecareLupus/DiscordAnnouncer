@@ -10,10 +10,22 @@ def test_parse_var_assignments():
     assert result == {"foo": "bar", "answer": "42"}
 
 
+def test_parse_var_assignments_json():
+    result = templates.parse_var_assignments(
+        ['list=[{"name": "A"}]', "count=5"], deserialize_json=True
+    )
+    assert result == {"list": [{"name": "A"}], "count": 5}
+
+
 @pytest.mark.parametrize("assignment", ["novalue", "=missing", "  =  "])
 def test_parse_var_assignments_invalid(assignment):
     with pytest.raises(templates.TemplateRenderError):
         templates.parse_var_assignments([assignment])
+
+
+def test_parse_var_assignments_invalid_json():
+    with pytest.raises(templates.TemplateRenderError):
+        templates.parse_var_assignments(["data={invalid}"], deserialize_json=True)
 
 
 def test_build_template_context_includes_defaults():
