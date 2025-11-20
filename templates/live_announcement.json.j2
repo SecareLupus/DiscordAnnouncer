@@ -10,8 +10,8 @@
       "color": {{ (color | default(DEFAULT_COLOR)) | int(base=0) }},
       "thumbnail": {"url": "{{ thumbnail_url | default('') }}"},
       "image": {"url": "{{ banner_url | default('') }}"},
-      "footer": {"text": "{{ footer_text | default('Join us in chat!') }}"},
-      "timestamp": "{{ now_iso }}"
+      "footer": {{ embed_footer(footer_text | default('Join us in chat!')) | tojson }},
+      "timestamp": "{{ embed_timestamp() }}"
     }
   ],
   "allowed_mentions": {"parse": []}

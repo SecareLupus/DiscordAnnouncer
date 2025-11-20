@@ -1,0 +1,23 @@
+{
+  "live_announcement.json.j2": {
+    "display_name": "Live Announcement",
+    "variables": {
+      "title": {"label": "Announcement Title"},
+      "stream_url": {"label": "Stream URL"},
+      "description": {"label": "Description"},
+      "color": {"label": "Embed Color", "type": "color"},
+      "thumbnail_url": {"label": "Thumbnail Image URL", "type": "image"},
+      "banner_url": {"label": "Banner Image URL", "type": "image"},
+      "footer_text": {"label": "Footer Text"}
+    }
+  },
+  "schedule_card.json.j2": {
+    "display_name": "Schedule Card",
+    "variables": {
+      "title": {"label": "Card Title"},
+      "description": {"label": "Card Description"},
+      "image_url": {"label": "Image URL", "type": "image"},
+      "color": {"label": "Accent Color", "type": "color"}
+    }
+  }
+}

@@ -33,7 +33,8 @@ python3 -m src.main \
 
 Helpful flags:
 
-- `--file PATH` include a file upload (refer to it with `attachment://filename` in templates).
+- `--file PATH[::DESCRIPTION][::CONTENT_TYPE]` upload an embed asset (reference via `attachment://filename` in templates).
+- `--upload PATH[::DESCRIPTION][::CONTENT_TYPE]` attach a raw file to the message body.
 - `--everyone` prepend `@everyone, ` to the message body.
 - `--allow-mentions everyone,roles` opt into additional mention types; defaults disallow mass pings.
 - `--dry-run` render JSON to stdout without contacting Discord.
@@ -52,9 +53,17 @@ Templates live in `templates/` and use the `.json.j2` suffix. Render-time variab
 
 The rendering context also exposes `message`, `message_prefix`, `now_iso` (UTC timestamp), and all normalized environment keys. Templates must produce a single JSON object; the application validates Discord field length limits before sending.
 
+To mirror Discord's embed structure without repeating JSON fragments, helpers are available inside every template:
+
+- `embed_footer(text, icon_url=None, proxy_icon_url=None)` returns a properly-shaped footer object.
+- `embed_field(name, value, inline=False)` produces embed field dictionaries.
+- `embed_timestamp(value=None)` formats datetimes as RFC3339/ISO strings (defaults to now when omitted).
+
+Pair these helpers with the built-in `|tojson` filter to inline them directly into JSON payloads.
+
 ## Attachments
 
-Pass `--file path/to/banner.png` to include uploads. The CLI builds the multipart form automatically and marks each file with its name and content type. Up to 10 attachments are supported, matching Discord’s limits.
+Use `--file path/to/banner.png::Alt text::image/png` for embed assets; only referenced filenames are uploaded so stray files cannot leak into the message body. Pair this with `attachment://banner.png` anywhere an image URL is expected. When you need to include a standard file download alongside the embed, use `--upload path/to/report.pdf` instead. Both switches respect the same optional description and MIME override syntax, and Discord’s 10-attachment limit still applies to the combined total.
 
 ## Tk GUI Companion
 

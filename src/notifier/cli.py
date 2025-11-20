@@ -13,12 +13,18 @@ from .core import (
     PayloadValidationError,
     WebhookDeliveryError,
     deliver_payload,
+    filter_attachments_for_payload,
     finalize_payload,
     set_redaction,
     validate_payload,
 )
 from .env import apply_overrides, load_environment
-from .templates import TemplateRenderError, build_template_context, parse_var_assignments, render_template
+from .templates import (
+    TemplateRenderError,
+    build_template_context,
+    parse_var_assignments,
+    render_template,
+)
 
 EXIT_SUCCESS = 0
 EXIT_VALIDATION = 2
@@ -30,7 +36,9 @@ LOG = logging.getLogger(__name__)
 
 
 class JsonLogFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # pragma: no cover - formatting logic
+    def format(
+        self, record: logging.LogRecord
+    ) -> str:  # pragma: no cover - formatting logic
         payload = {
             "level": record.levelname.lower(),
             "message": record.getMessage(),
@@ -80,16 +88,34 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         prog="discord-webhook-notifier",
         description="Send templated Discord webhook messages.",
     )
-    parser.add_argument("--template", required=True, help="Path to the Jinja2 template file.")
-    parser.add_argument("--message", default="", help="Message content sent alongside embeds.")
-    parser.add_argument("--everyone", action="store_true", help="Prefix message with @everyone.")
-    parser.add_argument("--var", action="append", default=[], help="Template variable assignment (key=value).")
+    parser.add_argument(
+        "--template", required=True, help="Path to the Jinja2 template file."
+    )
+    parser.add_argument(
+        "--message", default="", help="Message content sent alongside embeds."
+    )
+    parser.add_argument(
+        "--everyone", action="store_true", help="Prefix message with @everyone."
+    )
+    parser.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        help="Template variable assignment (key=value).",
+    )
     parser.add_argument(
         "--file",
         action="append",
         default=[],
         dest="files",
-        help="Attachment file to upload (repeatable).",
+        help="Embed asset to upload (PATH[::DESCRIPTION][::CONTENT_TYPE], repeatable).",
+    )
+    parser.add_argument(
+        "--upload",
+        action="append",
+        default=[],
+        dest="uploads",
+        help="Raw attachment to include as-is (PATH[::DESCRIPTION][::CONTENT_TYPE], repeatable).",
     )
     parser.add_argument(
         "--webhook",
@@ -98,19 +124,42 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         help="Target webhook URL (repeatable). Defaults to DISCORD_WEBHOOK_URL.",
     )
     parser.add_argument("--env", help="Path to a .env file with defaults.")
-    parser.add_argument("--dry-run", action="store_true", help="Render template and print payload without sending.")
-    parser.add_argument("--no-retry", action="store_true", help="Disable automatic retry on rate limits.")
-    parser.add_argument("--thread-id", help="Post message into a thread (thread_id query parameter).")
-    parser.add_argument("--suppress-embeds", action="store_true", help="Set the suppress embeds flag on the message.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Render template and print payload without sending.",
+    )
+    parser.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="Disable automatic retry on rate limits.",
+    )
+    parser.add_argument(
+        "--thread-id", help="Post message into a thread (thread_id query parameter)."
+    )
+    parser.add_argument(
+        "--suppress-embeds",
+        action="store_true",
+        help="Set the suppress embeds flag on the message.",
+    )
 
-    parser.add_argument("--allow-mentions", help="Comma-separated allowed mention types (everyone,roles,users).")
+    parser.add_argument(
+        "--allow-mentions",
+        help="Comma-separated allowed mention types (everyone,roles,users).",
+    )
 
     verbosity = parser.add_mutually_exclusive_group()
-    verbosity.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
+    verbosity.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable debug logging."
+    )
     verbosity.add_argument("-q", "--quiet", action="store_true", help="Reduce output.")
 
-    parser.add_argument("--verbose-json", action="store_true", help="Emit structured JSON logs.")
-    parser.add_argument("--no-redact", action="store_true", help="Do not redact webhook URLs in logs.")
+    parser.add_argument(
+        "--verbose-json", action="store_true", help="Emit structured JSON logs."
+    )
+    parser.add_argument(
+        "--no-redact", action="store_true", help="Do not redact webhook URLs in logs."
+    )
 
     parser.add_argument(
         "--version",
@@ -141,7 +190,9 @@ def _resolve_webhooks(args: argparse.Namespace, env_values: dict) -> List[str]:
     if default:
         return [default]
 
-    raise PayloadValidationError("Webhook URL not provided. Use --webhook or set DISCORD_WEBHOOK_URL in the environment.")
+    raise PayloadValidationError(
+        "Webhook URL not provided. Use --webhook or set DISCORD_WEBHOOK_URL in the environment."
+    )
 
 
 def run_cli(argv: Optional[Sequence[str]] = None) -> int:
@@ -179,7 +230,10 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
 
     collisions = sorted(key for key in cli_vars if key in env_with_cli)
     if collisions:
-        LOG.debug("Template variables override environment defaults for: %s", ", ".join(collisions))
+        LOG.debug(
+            "Template variables override environment defaults for: %s",
+            ", ".join(collisions),
+        )
 
     context = build_template_context(
         message=args.message,
@@ -208,10 +262,19 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     try:
-        attachments = prepare_attachments(args.files)
+        embed_assets = prepare_attachments(args.files, embed_only=True)
+        raw_uploads = prepare_attachments(args.uploads, embed_only=False)
     except AttachmentError as exc:
         LOG.error(str(exc))
         return EXIT_VALIDATION
+
+    attachments = embed_assets + raw_uploads
+    attachments, unused_attachments = filter_attachments_for_payload(
+        payload, attachments
+    )
+    if unused_attachments:
+        skipped = ", ".join(att.name for att in unused_attachments)
+        LOG.info("Skipping unreferenced embed assets: %s", skipped)
 
     try:
         validate_payload(payload, attachments)

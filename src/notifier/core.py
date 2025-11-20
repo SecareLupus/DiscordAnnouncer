@@ -5,7 +5,17 @@ import logging
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import requests
 
@@ -21,6 +31,10 @@ DISCORD_MAX_TITLE = 256
 DISCORD_MAX_DESCRIPTION = 4096
 DISCORD_MAX_FOOTER = 2048
 DISCORD_MAX_AUTHOR = 256
+DISCORD_MAX_EMBED_TOTAL = 6000
+DISCORD_MAX_FIELDS = 25
+DISCORD_MAX_FIELD_NAME = 256
+DISCORD_MAX_FIELD_VALUE = 1024
 
 
 class PayloadValidationError(RuntimeError):
@@ -63,7 +77,11 @@ def finalize_payload(
 
 
 def _ensure_embed_limits(embed: MutableMapping[str, object], *, index: int) -> None:
+    total_characters = 0
+
     def _check_text(key: str, value: object, limit: int) -> None:
+        nonlocal total_characters
+
         if value is None:
             return
         if not isinstance(value, str):
@@ -72,20 +90,139 @@ def _ensure_embed_limits(embed: MutableMapping[str, object], *, index: int) -> N
             raise PayloadValidationError(
                 f"embed[{index}].{key} exceeds maximum length ({len(value)}/{limit})"
             )
+        total_characters += len(value)
+
+    def _ensure_mapping(key: str) -> Optional[Mapping[str, object]]:
+        value = embed.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise PayloadValidationError(f"embed[{index}].{key} must be an object")
+        return value
+
+    def _validate_timestamp(raw: object) -> None:
+        if raw is None:
+            return
+        if not isinstance(raw, str):
+            raise PayloadValidationError(f"embed[{index}].timestamp must be a string")
+        candidate = raw
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
+        try:
+            datetime.fromisoformat(candidate)
+        except ValueError:
+            raise PayloadValidationError(
+                f"embed[{index}].timestamp must be ISO 8601 formatted"
+            ) from None
 
     _check_text("title", embed.get("title"), DISCORD_MAX_TITLE)
     _check_text("description", embed.get("description"), DISCORD_MAX_DESCRIPTION)
 
-    footer = embed.get("footer")
-    if isinstance(footer, Mapping):
+    footer = _ensure_mapping("footer")
+    if footer is not None:
         _check_text("footer.text", footer.get("text"), DISCORD_MAX_FOOTER)
 
-    author = embed.get("author")
-    if isinstance(author, Mapping):
+    author = _ensure_mapping("author")
+    if author is not None:
         _check_text("author.name", author.get("name"), DISCORD_MAX_AUTHOR)
 
+    for media_key in ("thumbnail", "image", "video", "provider"):
+        _ensure_mapping(media_key)
 
-def validate_payload(payload: Mapping[str, object], attachments: Sequence[Attachment]) -> None:
+    fields = embed.get("fields")
+    if fields is not None:
+        if not isinstance(fields, Sequence) or isinstance(fields, (str, bytes)):
+            raise PayloadValidationError(
+                f"embed[{index}].fields must be a sequence of field objects"
+            )
+        if len(fields) > DISCORD_MAX_FIELDS:
+            raise PayloadValidationError(
+                f"embed[{index}].fields exceeds Discord limit ({len(fields)}/{DISCORD_MAX_FIELDS})"
+            )
+        for field_index, field in enumerate(fields):
+            if not isinstance(field, Mapping):
+                raise PayloadValidationError(
+                    f"embed[{index}].fields[{field_index}] must be an object"
+                )
+            name = field.get("name")
+            value = field.get("value")
+            if name is None:
+                raise PayloadValidationError(
+                    f"embed[{index}].fields[{field_index}].name is required"
+                )
+            if value is None:
+                raise PayloadValidationError(
+                    f"embed[{index}].fields[{field_index}].value is required"
+                )
+            _check_text(f"fields[{field_index}].name", name, DISCORD_MAX_FIELD_NAME)
+            _check_text(f"fields[{field_index}].value", value, DISCORD_MAX_FIELD_VALUE)
+            inline = field.get("inline")
+            if inline is not None and not isinstance(inline, bool):
+                raise PayloadValidationError(
+                    f"embed[{index}].fields[{field_index}].inline must be a boolean"
+                )
+
+    _validate_timestamp(embed.get("timestamp"))
+
+    if total_characters > DISCORD_MAX_EMBED_TOTAL:
+        raise PayloadValidationError(
+            f"embed[{index}] exceeds the 6000 character aggregate limit ({total_characters}/{DISCORD_MAX_EMBED_TOTAL})"
+        )
+
+
+def _collect_attachment_references(
+    value: object, *, results: Optional[set[str]] = None
+) -> set[str]:
+    if results is None:
+        results = set()
+
+    if isinstance(value, str):
+        marker = "attachment://"
+        if marker in value:
+            _, _, suffix = value.partition(marker)
+            if suffix:
+                results.add(suffix)
+        return results
+
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _collect_attachment_references(item, results=results)
+        return results
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            _collect_attachment_references(item, results=results)
+    return results
+
+
+def filter_attachments_for_payload(
+    payload: Mapping[str, object], attachments: Sequence[Attachment]
+) -> Tuple[List[Attachment], List[Attachment]]:
+    """
+    Partition attachments into used/unreferenced lists based on embed references.
+
+    Attachments marked as *embed_only* must appear as attachment:// references
+    within the payload. Attachments without that flag are always retained.
+    """
+
+    references = _collect_attachment_references(payload)
+    used: List[Attachment] = []
+    unused: List[Attachment] = []
+
+    for attachment in attachments:
+        if not attachment.embed_only:
+            used.append(attachment)
+            continue
+        if attachment.name in references:
+            used.append(attachment)
+        else:
+            unused.append(attachment)
+    return used, unused
+
+
+def validate_payload(
+    payload: Mapping[str, object], attachments: Sequence[Attachment]
+) -> None:
     content = payload.get("content")
     if content is not None:
         if not isinstance(content, str):
@@ -136,8 +273,18 @@ def _prepare_request_payload(
     attachment_payload: List[Dict[str, object]] = []
     for index, attachment in enumerate(attachments):
         handle = attachment.path.open("rb")
-        files.append((f"files[{index}]", (attachment.name, handle, attachment.content_type)))
-        attachment_payload.append({"id": str(index), "filename": attachment.name})
+        files.append(
+            (f"files[{index}]", (attachment.name, handle, attachment.content_type))
+        )
+        attachment_meta: Dict[str, object] = {
+            "id": str(index),
+            "filename": attachment.name,
+        }
+        if attachment.description:
+            attachment_meta["description"] = attachment.description
+        if attachment.explicit_content_type:
+            attachment_meta["content_type"] = attachment.content_type
+        attachment_payload.append(attachment_meta)
 
     if attachment_payload:
         prepared["attachments"] = attachment_payload
@@ -155,7 +302,9 @@ def _close_files(files: Optional[List[Tuple[str, Tuple[str, object, str]]]]) -> 
 
 
 def _compute_retry_delay(response: requests.Response) -> float:
-    retry_after = response.headers.get("Retry-After") or response.headers.get("X-RateLimit-Reset-After")
+    retry_after = response.headers.get("Retry-After") or response.headers.get(
+        "X-RateLimit-Reset-After"
+    )
     if retry_after:
         try:
             return float(retry_after)
@@ -193,7 +342,10 @@ def post_to_webhook(
 
     try:
         if files:
-            data_kwargs = {"data": {"payload_json": json.dumps(prepared_payload)}, "files": files}
+            data_kwargs = {
+                "data": {"payload_json": json.dumps(prepared_payload)},
+                "files": files,
+            }
         else:
             data_kwargs = {"json": prepared_payload}
 
@@ -227,7 +379,9 @@ def post_to_webhook(
             status_code=response.status_code,
         )
 
-    return DeliveryResult(url=webhook_url, status_code=response.status_code, body=response.text)
+    return DeliveryResult(
+        url=webhook_url, status_code=response.status_code, body=response.text
+    )
 
 
 def deliver_payload(
