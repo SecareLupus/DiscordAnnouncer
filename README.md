@@ -14,6 +14,13 @@ Discord Webhook Notifier is a Python application for crafting Discord webhook me
 
 ## Install & Setup
 
+- Linux/macOS: run `./launch-linux.sh`
+- Windows (PowerShell): `.\launch-windows.ps1`
+
+Both scripts create/activate `.venv`, upgrade `pip`, install dependencies, and start the Tk GUI in one go. Re-run them any time; they reuse the existing environment.
+
+If you prefer to manage the environment yourself instead:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
