@@ -3,7 +3,6 @@
     "display_name": "Live Announcement",
     "variables": {
       "title": { "label": "Announcement Title" },
-      "stream_url": { "label": "Stream URL" },
       "description": { "label": "Description" },
       "color": { "label": "Embed Color", "type": "color" },
       "thumbnail_url": { "label": "Thumbnail Image URL", "type": "image" },

@@ -87,7 +87,7 @@ DEFAULT_COLOR=0x9B59B6
   "embeds": [
     {
       "title": "{{ title | default('We’re LIVE!') }}",
-      "url": "{{ stream_url | default('https://twitch.tv/YourChannel') }}",
+      "url": "https://twitch.tv/{{ TWITCH_CHANNEL | default('YourChannel') }}",
       "description": "{{ description | default('Come hang out!') }}",
       "color": {{ color | default(DEFAULT_COLOR | int, true) }},
       "thumbnail": {"url": "{{ thumbnail_url | default('') }}"},
@@ -123,7 +123,7 @@ discord-webhook-notifier \
   --message "Stream is up: spooky speedruns!" \
   --everyone false \
   --var title="Halloween Marathon" \
-  --var stream_url="https://twitch.tv/FoxyLupi" \
+  --var TWITCH_CHANNEL="FoxyLupi" \
   --var banner_url="https://static-cdn.jtvnw.net/previews-ttv/live_user_FoxyLupi-1280x720.jpg" \
   --file ./art/banner.png \
   --webhook $DISCORD_WEBHOOK_URL
@@ -241,7 +241,7 @@ discord-webhook-notifier \
   --message "We’re live with co-op chaos!" \
   --everyone true \
   --var title="Friday Night Party" \
-  --var stream_url="https://twitch.tv/FoxyLupi" \
+  --var TWITCH_CHANNEL="FoxyLupi" \
   --var banner_url="https://static-cdn.jtvnw.net/previews-ttv/live_user_FoxyLupi-1280x720.jpg"
 ```
 

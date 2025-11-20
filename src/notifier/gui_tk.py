@@ -38,6 +38,7 @@ RESERVED_TEMPLATE_VARS = {
     "BOT_USERNAME",
     "BOT_AVATAR_URL",
     "DEFAULT_COLOR",
+    "TWITCH_CHANNEL",
     "embed_footer",
     "embed_field",
     "embed_timestamp",
@@ -45,6 +46,7 @@ RESERVED_TEMPLATE_VARS = {
 CONFIG_FIELDS: List[Tuple[str, Dict[str, str]]] = [
     ("BOT_USERNAME", {"label": "Bot Username"}),
     ("BOT_AVATAR_URL", {"label": "Bot Avatar URL", "type": "image"}),
+    ("TWITCH_CHANNEL", {"label": "Twitch Channel Name"}),
     ("DEFAULT_COLOR", {"label": "Default Color", "type": "color"}),
 ]
 

@@ -2,6 +2,9 @@
 
 Discord Webhook Notifier is a Python application for crafting Discord webhook messages with reusable templates. It ships with a command line interface and a Tk-based desktop helper; both produce identical payloads by sharing the same execution path.
 
+![GUI Interface](GUI_Interface.png) ![Rendered Output](Output.png)
+
+
 ## Why Use It?
 
 - Keep announcement embeds consistent by rendering Jinja2 templates to Discord-compatible JSON.
@@ -18,7 +21,7 @@ pip install --upgrade pip
 pip install -e .[dev]
 ```
 
-Copy `.env.example` to `.env` and fill in at least `DISCORD_WEBHOOK_URL`. Optional values like `BOT_USERNAME`, `BOT_AVATAR_URL`, and `DEFAULT_COLOR` serve as template defaults.
+Copy `.env.example` to `.env` and fill in at least `DISCORD_WEBHOOK_URL`. Optional values like `BOT_USERNAME`, `BOT_AVATAR_URL`, `TWITCH_CHANNEL`, and `DEFAULT_COLOR` serve as template defaults.
 
 ## Command Line Reference
 
@@ -28,8 +31,10 @@ Basic invocation:
 python3 -m src.main \
   --template templates/live_announcement.json.j2 \
   --message "Stream is live!" \
-  --var stream_url="https://twitch.tv/FoxyLupi"
+  --var TWITCH_CHANNEL="FoxyLupi"
 ```
+
+Set `TWITCH_CHANNEL` once via `.env`, the GUI configuration dialog, or a one-off `--var` assignment—the live announcement template automatically links to `https://twitch.tv/<channel>`.
 
 Helpful flags:
 
