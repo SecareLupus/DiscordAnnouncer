@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import io
 import json
+import queue
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,6 +115,7 @@ class GuiState:
     template_path: str = ""
     message: str = ""
     everyone: bool = False
+    post_when_live: bool = False
     variables: Dict[str, str] = field(default_factory=dict)
     config: Dict[str, str] = field(default_factory=dict)
     attachments: List[str] = field(default_factory=list)
@@ -150,6 +153,7 @@ class GuiState:
                 template_path=data.get("template_path", ""),
                 message=data.get("message", ""),
                 everyone=data.get("everyone", False),
+                post_when_live=data.get("post_when_live", False),
                 variables=variables_data,
                 config=config_data,
                 attachments=data.get("attachments", []),
@@ -166,6 +170,7 @@ class GuiState:
             "template_path": self.template_path,
             "message": self.message,
             "everyone": self.everyone,
+            "post_when_live": self.post_when_live,
             "variables": self.variables,
             "config": self.config,
             "attachments": self.attachments,
@@ -186,9 +191,15 @@ class NotifierGUI(tk.Tk):
         self._env_defaults = self._load_env_defaults()
         self.template_metadata = self._load_template_metadata()
         self._template_display_map: Dict[str, str] = {}
+        self._webhook_display_map: Dict[str, str] = {}
         self._suspend_template_display = False
         self._build_widgets()
         self._load_state()
+        self._running_process: Optional[subprocess.Popen[str]] = None
+        self._process_queue: "queue.SimpleQueue[str]" = queue.SimpleQueue()
+        self._poll_job: Optional[str] = None
+        self._pending_dry_run = False
+        self._process_cancelled = False
 
     def _build_widgets(self) -> None:
         main = ttk.Frame(self, padding=12)
@@ -235,6 +246,11 @@ class NotifierGUI(tk.Tk):
             main, text="@everyone", variable=self.everyone_var
         )
         everyone_check.grid(row=3, column=0, sticky="w")
+        self.post_when_live_var = tk.BooleanVar()
+        post_when_live_check = ttk.Checkbutton(
+            main, text="Post when I go live", variable=self.post_when_live_var
+        )
+        post_when_live_check.grid(row=3, column=1, sticky="w")
 
         ttk.Label(main, text="Message:").grid(row=4, column=0, sticky="nw")
         self.message_text = tk.Text(main, height=5, width=60)
@@ -284,9 +300,12 @@ class NotifierGUI(tk.Tk):
         ttk.Button(
             button_bar, text="Configuration", command=self._open_config_dialog
         ).grid(row=0, column=1)
-        ttk.Button(button_bar, text="Send", command=self._send).grid(
-            row=0, column=2, padx=(8, 0)
+        self.send_button = ttk.Button(button_bar, text="Send", command=self._send)
+        self.send_button.grid(row=0, column=2, padx=(8, 0))
+        self.cancel_button = ttk.Button(
+            button_bar, text="Cancel", command=self._cancel_cli_process, state="disabled"
         )
+        self.cancel_button.grid(row=0, column=3, padx=(8, 0))
 
     def _load_state(self) -> None:
         webhook_value = self.state.last_webhook or self._env_defaults.get(
@@ -306,6 +325,7 @@ class NotifierGUI(tk.Tk):
         for attachment in self.state.attachments:
             self.attachment_list.insert(tk.END, attachment)
         self.everyone_var.set(self.state.everyone)
+        self.post_when_live_var.set(self.state.post_when_live)
         self._refresh_template_variables()
 
     def _persist_state(self, variables: Dict[str, str]) -> None:
@@ -316,6 +336,7 @@ class NotifierGUI(tk.Tk):
         self.state.template_path = self.template_path_var.get().strip()
         self.state.message = self.message_text.get("1.0", tk.END).strip()
         self.state.everyone = self.everyone_var.get()
+        self.state.post_when_live = self.post_when_live_var.get()
         self.state.variables = variables
         self.state.attachments = attachments
         self.state.save()
@@ -348,24 +369,38 @@ class NotifierGUI(tk.Tk):
             self._refresh_template_variables()
 
     def _build_webhook_display_values(self) -> List[str]:
-        return [entry["label"] for entry in self.state.webhook_history]
+        self._webhook_display_map = {
+            entry["label"]: entry["url"] for entry in self.state.webhook_history
+        }
+        return list(self._webhook_display_map.keys())
 
     def _current_webhook_label(self) -> str:
         return self.webhook_display_var.get().strip()
 
+    def _resolve_webhook_url(self) -> str:
+        """
+        Return the URL based on the current display selection or raw entry.
+        Ensures labels are converted back to their stored URLs before sending.
+        """
+        label = self.webhook_display_var.get().strip()
+        mapped = self._webhook_display_map.get(label)
+        if mapped:
+            self.webhook_var.set(mapped)
+            return mapped
+        if label.startswith("http://") or label.startswith("https://"):
+            self.webhook_var.set(label)
+            return label
+        raw = self.webhook_var.get().strip()
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+        return ""
+
     def _sync_webhook_value(self) -> None:
         label = self.webhook_display_var.get().strip()
-        entry = next(
-            (
-                candidate
-                for candidate in self.state.webhook_history
-                if candidate["label"] == label
-            ),
-            None,
-        )
-        if entry:
-            self.webhook_var.set(entry["url"])
-        else:
+        mapped = self._webhook_display_map.get(label)
+        if mapped:
+            self.webhook_var.set(mapped)
+        elif label.startswith("http://") or label.startswith("https://"):
             self.webhook_var.set(label)
 
     def _on_webhook_selected(self, *_args) -> None:
@@ -502,12 +537,13 @@ class NotifierGUI(tk.Tk):
         self, variables: Dict[str, str], json_variables: Dict[str, str]
     ) -> List[str]:
         args = []
+        self._sync_webhook_value()
+        webhook = self._resolve_webhook_url()
+        if webhook:
+            args.extend(["--webhook", webhook])
         template = self.template_path_var.get().strip()
         if template:
             args.extend(["--template", template])
-        webhook = self.webhook_var.get().strip()
-        if webhook:
-            args.extend(["--webhook", webhook])
         message = self.message_text.get("1.0", tk.END).strip()
         if message:
             args.extend(["--message", message])
@@ -522,10 +558,124 @@ class NotifierGUI(tk.Tk):
         return args
 
     def _preview(self) -> None:
+        self._sync_webhook_value()
         self._execute_cli(dry_run=True)
 
     def _send(self) -> None:
+        self._sync_webhook_value()
         self._execute_cli(dry_run=False)
+
+    def _set_preview_text(self, content: str) -> None:
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", content)
+        self.preview_text.configure(state="disabled")
+
+    def _append_preview_line(self, line: str) -> None:
+        self.preview_text.configure(state="normal")
+        existing = self.preview_text.get("1.0", tk.END).rstrip("\n")
+        updated = f"{existing}\n{line}" if existing else line
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", updated)
+        self.preview_text.configure(state="disabled")
+
+    def _run_cli_command(self, cmd: List[str], *, dry_run: bool) -> None:
+        if self._running_process is not None:
+            messagebox.showwarning(
+                "Already running", "Please wait for the current command to finish or cancel it."
+            )
+            return
+        self._pending_dry_run = dry_run
+        self._process_cancelled = False
+        self._set_preview_text("Starting...")
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as exc:
+            messagebox.showerror("Execution error", str(exc))
+            return
+
+        self._running_process = process
+        self.cancel_button.configure(state="normal")
+        self.send_button.configure(state="disabled")
+
+        def _drain_stream(stream: Optional[io.TextIOBase]) -> None:
+            if stream is None:
+                return
+            try:
+                for line in iter(stream.readline, ""):
+                    if line:
+                        self._process_queue.put(line.rstrip("\n"))
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_drain_stream, args=(process.stdout,), daemon=True).start()
+        threading.Thread(target=_drain_stream, args=(process.stderr,), daemon=True).start()
+        self._poll_process_output()
+
+    def _poll_process_output(self) -> None:
+        while not self._process_queue.empty():
+            try:
+                line = self._process_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line:
+                self._append_preview_line(line)
+
+        proc = self._running_process
+        if proc and proc.poll() is None:
+            self._poll_job = self.after(200, self._poll_process_output)
+            return
+
+        self._poll_job = None
+        if proc is None:
+            return
+
+        # Drain any remaining output before finalizing
+        while not self._process_queue.empty():
+            try:
+                line = self._process_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line:
+                self._append_preview_line(line)
+
+        exit_code = proc.returncode
+        self._running_process = None
+        self.cancel_button.configure(state="disabled")
+        self.send_button.configure(state="normal")
+        self._append_preview_line(f"Exit code: {exit_code}")
+
+        if self._process_cancelled:
+            self._append_preview_line("Cancelled by user.")
+            return
+        if exit_code == 0 and not self._pending_dry_run:
+            messagebox.showinfo("Success", "Message sent successfully.")
+        elif exit_code != 0:
+            messagebox.showwarning(
+                "Error", f"Command exited with {exit_code}. See logs above."
+            )
+
+    def _cancel_cli_process(self) -> None:
+        proc = self._running_process
+        if proc is None:
+            return
+        self._process_cancelled = True
+        self.cancel_button.configure(state="disabled")
+        self._append_preview_line("Cancelling...")
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        # Allow the poller to observe process completion
 
     def _execute_cli(self, *, dry_run: bool) -> None:
         template_variables, template_json_variables = self._collect_variable_entries()
@@ -535,42 +685,18 @@ class NotifierGUI(tk.Tk):
         self._persist_state({**template_variables, **template_json_variables})
         base_cmd = self._build_cli_base()
         args = self._gather_cli_args(combined_variables, template_json_variables)
+        if self.post_when_live_var.get():
+            args.append("--wait-for-live")
         if dry_run:
             args.append("--dry-run")
         cmd = base_cmd + args
-
-        try:
-            completed = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-        except Exception as exc:
-            messagebox.showerror("Execution error", str(exc))
-            return
-
-        output = []
-        if completed.stdout:
-            output.append(completed.stdout.strip())
-        if completed.stderr:
-            output.append(completed.stderr.strip())
-
-        status = f"Exit code: {completed.returncode}"
-        output.append(status)
-
-        self.preview_text.configure(state="normal")
-        self.preview_text.delete("1.0", tk.END)
-        self.preview_text.insert("1.0", "\n\n".join(part for part in output if part))
-        self.preview_text.configure(state="disabled")
-
-        if completed.returncode == 0 and not dry_run:
-            messagebox.showinfo("Success", "Message sent successfully.")
-        elif completed.returncode != 0:
+        if "--webhook" not in args:
             messagebox.showwarning(
-                "Error", f"Command exited with {completed.returncode}. See logs above."
+                "Missing webhook",
+                "Select a saved webhook or enter a full webhook URL before sending.",
             )
+            return
+        self._run_cli_command(cmd, dry_run=dry_run)
 
     def _on_template_var_changed(self, *_args) -> None:
         if self._template_refresh_job is not None:

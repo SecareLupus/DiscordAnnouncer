@@ -4,9 +4,11 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
+import requests
 from .attachments import AttachmentError, prepare_attachments
 from .core import (
     DeliveryResult,
@@ -31,6 +33,9 @@ EXIT_VALIDATION = 2
 EXIT_HTTP_ERROR = 3
 EXIT_RATE_LIMIT = 4
 EXIT_TEMPLATE_ERROR = 5
+
+LIVE_CHECK_INTERVAL = 45.0
+LIVE_CHECK_TIMEOUT = 3600.0
 
 LOG = logging.getLogger(__name__)
 
@@ -149,6 +154,14 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         action="store_true",
         help="Set the suppress embeds flag on the message.",
     )
+    parser.add_argument(
+        "--wait-for-live",
+        action="store_true",
+        help=(
+            "Queue the webhook until the configured TWITCH_CHANNEL is live on Twitch "
+            f"(checks every {int(LIVE_CHECK_INTERVAL)}s, timeout after {int(LIVE_CHECK_TIMEOUT // 60)}m)."
+        ),
+    )
 
     parser.add_argument(
         "--allow-mentions",
@@ -200,6 +213,86 @@ def _resolve_webhooks(args: argparse.Namespace, env_values: dict) -> List[str]:
     raise PayloadValidationError(
         "Webhook URL not provided. Use --webhook or set DISCORD_WEBHOOK_URL in the environment."
     )
+
+
+def _normalize_twitch_channel(raw: str) -> str:
+    candidate = raw.strip()
+    lowered = candidate.lower()
+    prefixes = ("https://twitch.tv/", "http://twitch.tv/", "twitch.tv/")
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            candidate = candidate[len(prefix) :]
+            break
+    candidate = candidate.lstrip("@").strip("/")
+    return candidate
+
+
+def _resolve_live_channel(cli_vars: dict, env_values: dict) -> str:
+    def _lookup(mapping: dict) -> str:
+        for key, value in mapping.items():
+            if not isinstance(value, str):
+                continue
+            if key.lower() == "twitch_channel":
+                return value
+        return ""
+
+    channel = _lookup(cli_vars) or _lookup(env_values)
+    channel = _normalize_twitch_channel(channel) if channel else ""
+    if not channel:
+        raise ValueError(
+            "TWITCH_CHANNEL not provided. Set it in the environment or via --var."
+        )
+    return channel
+
+
+def _check_twitch_live(channel: str, *, session: requests.Session) -> bool:
+    url = f"https://decapi.me/twitch/uptime/{channel}"
+    response = session.get(url, timeout=10)
+    response.raise_for_status()
+    text = response.text.strip().lower()
+    if not text:
+        return False
+    if "no user with that name" in text:
+        raise ValueError(f"Twitch channel '{channel}' does not exist.")
+    offline_markers = (
+        "is offline",
+        "is currently offline",
+        "offline",
+        "not live",
+        "never gone live",
+    )
+    if any(marker in text for marker in offline_markers):
+        return False
+    return True
+
+
+def _wait_for_live(
+    channel: str,
+    *,
+    interval: float = LIVE_CHECK_INTERVAL,
+    timeout: float = LIVE_CHECK_TIMEOUT,
+    check_fn: Callable[..., bool] = _check_twitch_live,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    time_fn: Callable[[], float] = time.monotonic,
+) -> bool:
+    deadline = time_fn() + timeout
+    session = requests.Session()
+    try:
+        while True:
+            try:
+                if check_fn(channel, session=session):
+                    return True
+                LOG.info("%s is offline. Checking again in %ss.", channel, int(interval))
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                LOG.warning("Live check failed for %s: %s", channel, exc)
+            now = time_fn()
+            if now >= deadline:
+                return False
+            remaining = deadline - now
+            sleep_duration = min(interval, max(0.0, remaining))
+            sleep_fn(sleep_duration)
+    finally:
+        session.close()
 
 
 def run_cli(argv: Optional[Sequence[str]] = None) -> int:
@@ -298,6 +391,31 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
     except PayloadValidationError as exc:
         LOG.error(str(exc))
         return EXIT_VALIDATION
+
+    if args.wait_for_live:
+        if args.dry_run:
+            LOG.info("Skipping live wait because --dry-run is enabled.")
+        else:
+            try:
+                channel = _resolve_live_channel(cli_vars, env_with_cli)
+            except ValueError as exc:
+                LOG.error(str(exc))
+                return EXIT_VALIDATION
+            LOG.info(
+                "Waiting for %s to go live (check every %ss, timeout after %sm).",
+                channel,
+                int(LIVE_CHECK_INTERVAL),
+                int(LIVE_CHECK_TIMEOUT // 60),
+            )
+            went_live = _wait_for_live(channel)
+            if not went_live:
+                LOG.error(
+                    "Timed out waiting for %s to go live after %s minutes.",
+                    channel,
+                    int(LIVE_CHECK_TIMEOUT // 60),
+                )
+                return EXIT_HTTP_ERROR
+            LOG.info("%s is live; sending webhook...", channel)
 
     if args.dry_run:
         print(json.dumps(payload, indent=2))

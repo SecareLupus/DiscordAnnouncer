@@ -53,6 +53,7 @@ Helpful flags:
 - `--dry-run` render JSON to stdout without contacting Discord.
 - `--no-retry` disable the automatic retry after a 429 response.
 - `--webhook URL` send to a specific webhook; repeat for multiple URLs.
+- `--wait-for-live` poll Twitch for `TWITCH_CHANNEL` every 45s (up to 1 hour) before sending the webhook.
 
 Exit codes: `0` success, `2` invalid input, `3` HTTP failure, `4` rate limit exhausted, `5` template error.
 
@@ -91,6 +92,8 @@ python3 -m src.notifier.gui_tk
 The window lets you pick a webhook, template, message, variables (one `key=value` per line), and attachments. “Preview” runs the CLI with `--dry-run` and shows the captured output; “Send” executes the real request. Recent inputs persist in `~/.discord-webhook-notifier/state.json`.
 
 Template metadata can opt into richer field types (such as repeating embed fields). Those controls serialize to JSON automatically and are passed to the CLI via `--json-var`, so the GUI, CLI, and automation all share the same structured data path.
+
+Toggle “Post when I go live” to pass `--wait-for-live` to the CLI, which polls Twitch for your configured `TWITCH_CHANNEL` every 45 seconds for up to one hour before sending the webhook when live.
 
 ## Development
 
